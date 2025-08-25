@@ -5,6 +5,7 @@ exports.handler = async function () {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
   try {
+    // Request Bridge without a limit param (Bridge defaults to ~10)
     const url = `${BRIDGE_BASE_URL}/Property?access_token=${BRIDGE_API_KEY}`;
     console.log("FETCHING FROM:", url);
 
