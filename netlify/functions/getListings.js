@@ -1,27 +1,18 @@
 // netlify/functions/getListings.js
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-exports.handler = async function (event) {
+exports.handler = async function () {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
   try {
-    const q = new URLSearchParams({ access_token: BRIDGE_API_KEY });
-
-    // only set limit if caller provided one
-    const rawLimit = event.queryStringParameters?.limit;
-    if (rawLimit != null && rawLimit !== "") {
-      const n = parseInt(String(rawLimit), 10);
-      if (Number.isFinite(n)) {
-        q.set("limit", String(Math.max(1, Math.min(50, n))));
-      }
-    }
-
-    const url = `${BRIDGE_BASE_URL}/Property?${q.toString()}`;
+    // Request Bridge without a limit param (Bridge defaults to ~10)
+    const url = `${BRIDGE_BASE_URL}/Property?access_token=${BRIDGE_API_KEY}`;
     console.log("FETCHING FROM:", url);
 
-    const r = await fetch(url);
+    const r = await fetch(url, { headers: { "Accept": "application/json" } });
     const data = await r.json();
 
+    // Pass Bridge’s body through as-is
     return {
       statusCode: r.ok ? 200 : r.status,
       body: JSON.stringify(data),
