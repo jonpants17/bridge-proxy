@@ -1,4 +1,4 @@
-// netlify/functions/getListing.js
+// bridge-proxy/netlify/functions/getListing.js
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
@@ -18,18 +18,17 @@ exports.handler = async function (event) {
     };
   }
 
-  // Normalize like your frontend: uppercase, strip spaces
   const target = String(raw).trim();
 
-  // Helper: extract array
   const toArray = (data) =>
     Array.isArray(data?.bundle)
       ? data.bundle
       : Array.isArray(data?.value)
       ? data.value
+      : Array.isArray(data?.listings)
+      ? data.listings
       : [];
 
-  // Helper: match id against common fields
   const matches = (l) => {
     const a = String(l?.ListingKey || "").trim();
     const b = String(l?.ListingId || "").trim();
@@ -38,14 +37,13 @@ exports.handler = async function (event) {
   };
 
   try {
-    // Scan a few pages (fast + reliable). Increase pages if needed.
     const limit = 200;
-    const maxPagesToScan = 10; // 10 * 200 = 2000 listings scanned worst case
+    const maxPagesToScan = 40; // 40*200 = 8000 (covers your ~6410 total)
 
     for (let i = 0; i < maxPagesToScan; i++) {
       const offset = i * limit;
 
-      const url = new URL(`${BRIDGE_BASE_URL}/Property`);
+      const url = new URL(`${BRIDGE_BASE_URL}/listings`);
       url.searchParams.set("access_token", BRIDGE_API_KEY);
       url.searchParams.set("limit", String(limit));
       url.searchParams.set("offset", String(offset));
@@ -67,7 +65,7 @@ exports.handler = async function (event) {
           body: JSON.stringify({
             success: false,
             error: `Upstream error ${r.status}`,
-            details: text.slice(0, 300),
+            details: text.slice(0, 500),
           }),
         };
       }
@@ -87,8 +85,7 @@ exports.handler = async function (event) {
         };
       }
 
-      // If we got fewer than limit, we've hit the end
-      if (bundle.length < limit) break;
+      if (bundle.length < limit) break; // end of feed
     }
 
     return {
