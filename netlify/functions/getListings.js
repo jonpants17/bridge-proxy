@@ -12,10 +12,6 @@ function isInternetDisplayable(l) {
   return v !== "N" && v !== "0" && v !== "FALSE";
 }
 
-function normalize(str) {
-  return String(str || "").toLowerCase();
-}
-
 function looksLikeMLS(raw) {
   const m = String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
   return /^[A-Z]\d{6,10}$/.test(m);
@@ -49,34 +45,36 @@ function matchesQuery(listing, q) {
     .join(" ")
     .toLowerCase();
 
-  // require every token to appear somewhere
   return tokens.every((t) => hay.includes(t));
 }
 
 exports.handler = async function (event) {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
+  // ✅ 30s cache for better speed
+  const COMMON_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "application/json",
+    "Cache-Control": "public, max-age=30",
+  };
+
   try {
     const qsp = event?.queryStringParameters || {};
 
-    // Requested paging from the UI (offset is WITHIN filtered results when q is used)
     const limit = Math.max(
       1,
       Math.min(200, parseInt(qsp.limit || "50", 10) || 50)
     );
     const offset = Math.max(0, parseInt(qsp.offset || "0", 10) || 0);
 
-    // Search text
     const q = String(qsp.q || "").trim();
 
-    // Safety cap: how many raw listings we’ll scan when q is used
-    // (keeps it fast + avoids hammering your limits)
     const MAX_SCAN = Math.max(
       200,
       Math.min(5000, parseInt(process.env.MAX_SCAN || "1500", 10) || 1500)
     );
 
-    // 1) No search term → fast proxy (best performance)
+    // 1) No search term → fast proxy
     if (!q) {
       const params = new URLSearchParams({
         access_token: BRIDGE_API_KEY,
@@ -91,10 +89,7 @@ exports.handler = async function (event) {
       return {
         statusCode: r.ok ? 200 : r.status,
         body: JSON.stringify(data),
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Content-Type": "application/json",
-        },
+        headers: COMMON_HEADERS,
       };
     }
 
@@ -133,26 +128,19 @@ exports.handler = async function (event) {
           isCapped: false,
           scanned: 0,
         }),
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Content-Type": "application/json",
-        },
+        headers: COMMON_HEADERS,
       };
     }
 
-    // 3) General search (city/community/address) → scan & filter server-side
-    // We scan the feed in chunks of 200 until we’ve collected enough matches
-    // to satisfy the requested page: [offset .. offset+limit)
+    // 3) General search → scan & filter server-side
     const CHUNK = 200;
 
     let scanned = 0;
     let rawOffset = 0;
-
     let totalFeed = null;
 
-    const matches = []; // only store matches up to offset+limit to reduce memory
+    const matches = [];
     let totalMatches = 0;
-
     const needUpTo = offset + limit;
 
     while (scanned < MAX_SCAN) {
@@ -169,24 +157,18 @@ exports.handler = async function (event) {
       const bundle = Array.isArray(data?.bundle) ? data.bundle : [];
       if (totalFeed == null && typeof data?.total === "number") totalFeed = data.total;
 
-      // no more data
       if (!bundle.length) break;
 
       scanned += bundle.length;
 
-      // filter + count
       for (const l of bundle) {
         if (!isInternetDisplayable(l)) continue;
         if (!matchesQuery(l, q)) continue;
 
         totalMatches += 1;
-
-        // only keep what we need for this page window
         if (matches.length < needUpTo) matches.push(l);
       }
 
-      // if we already have enough matches to fill requested page,
-      // we can stop scanning early (fast)
       if (matches.length >= needUpTo) break;
 
       rawOffset += CHUNK;
@@ -200,25 +182,27 @@ exports.handler = async function (event) {
       body: JSON.stringify({
         bundle: pageSlice,
         total: typeof totalFeed === "number" ? totalFeed : 0,
-        totalMatches,          // matches found within the scan window
-        isCapped,              // tells UI if search may be incomplete
-        scanned,               // how many raw listings were scanned
+        totalMatches,
+        isCapped,
+        scanned,
         scanCap: MAX_SCAN,
         q,
         limit,
         offset,
       }),
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
+      headers: COMMON_HEADERS,
     };
   } catch (error) {
     console.error("Bridge proxy error:", error);
     return {
       statusCode: 500,
       body: JSON.stringify({ error: error.message }),
-      headers: { "Access-Control-Allow-Origin": "*" },
+      // Optional: shorter cache for errors, but fine to use COMMON_HEADERS too
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=10",
+      },
     };
   }
 };
