@@ -6,16 +6,26 @@ exports.handler = async function (event) {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
   try {
-    // Build query: always include token; include limit only if caller provides it (1–200)
-    const params = new URLSearchParams({ access_token: BRIDGE_API_KEY });
+    const q = event?.queryStringParameters || {};
 
-    const rawLimit = event?.queryStringParameters?.limit;
-    if (rawLimit != null && rawLimit !== "") {
-      const n = parseInt(String(rawLimit), 10);
-      if (Number.isFinite(n)) {
-        params.set("limit", String(Math.max(1, Math.min(200, n))));
-      }
-    }
+    // limit: 1–200
+    const limitRaw = q.limit;
+    const limit = Number.isFinite(parseInt(limitRaw, 10))
+      ? Math.max(1, Math.min(200, parseInt(limitRaw, 10)))
+      : 50;
+
+    // offset: 0+
+    const offsetRaw = q.offset;
+    const offset = Number.isFinite(parseInt(offsetRaw, 10))
+      ? Math.max(0, parseInt(offsetRaw, 10))
+      : 0;
+
+    // IMPORTANT: Use the SAME upstream endpoint your dataset supports
+    const params = new URLSearchParams({
+      access_token: BRIDGE_API_KEY,
+      limit: String(limit),
+      offset: String(offset),
+    });
 
     const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
     console.log("FETCHING FROM:", url);
@@ -25,10 +35,11 @@ exports.handler = async function (event) {
 
     return {
       statusCode: r.ok ? 200 : r.status,
-      body: JSON.stringify(data),
+      body: JSON.stringify(data), // keep original payload: bundle, total, etc.
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Content-Type": "application/json",
+        "Cache-Control": "no-store",
       },
     };
   } catch (error) {
@@ -36,7 +47,11 @@ exports.handler = async function (event) {
     return {
       statusCode: 500,
       body: JSON.stringify({ error: error.message }),
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
     };
   }
 };
