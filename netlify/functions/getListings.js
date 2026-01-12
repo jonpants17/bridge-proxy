@@ -3,12 +3,16 @@ const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 function isInternetDisplayable(l) {
+  // ✅ guard (prevents silent crashes if l is ever undefined/null)
+  if (!l) return false;
+
   const v = String(
     l.InternetDisplayYN ??
       l.InternetEntireListingDisplayYN ??
       l.InternetEntireListingDisplay ??
       ""
   ).toUpperCase();
+
   return v !== "N" && v !== "0" && v !== "FALSE";
 }
 
@@ -19,6 +23,7 @@ function looksLikeMLS(raw) {
 
 function matchesQuery(listing, q) {
   if (!q) return true;
+  if (!listing) return false;
 
   const tokens = String(q)
     .trim()
@@ -146,8 +151,6 @@ exports.handler = async function (event) {
     }
 
     // 3) General search (city/community/address) → scan & filter server-side
-    // We scan the feed in chunks of 200 until we’ve collected enough matches
-    // to satisfy the requested page: [offset .. offset+limit)
     const CHUNK = 200;
 
     let scanned = 0;
