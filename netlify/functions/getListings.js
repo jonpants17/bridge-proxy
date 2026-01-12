@@ -3,21 +3,22 @@ const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 function isInternetDisplayable(l) {
-  // ✅ guard (prevents silent crashes if l is ever undefined/null)
   if (!l) return false;
-
   const v = String(
     l.InternetDisplayYN ??
       l.InternetEntireListingDisplayYN ??
       l.InternetEntireListingDisplay ??
       ""
   ).toUpperCase();
-
   return v !== "N" && v !== "0" && v !== "FALSE";
 }
 
+function normalizeMLS(raw) {
+  return String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
+}
+
 function looksLikeMLS(raw) {
-  const m = String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
+  const m = normalizeMLS(raw);
   return /^[A-Z]\d{6,10}$/.test(m);
 }
 
@@ -57,7 +58,7 @@ function matchesQuery(listing, q) {
 exports.handler = async function (event) {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
-  // ✅ 30s cache for better speed
+  // Cache: ok for general browsing; MLS searches can be “no-store” to avoid stale misses
   const COMMON_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
@@ -67,23 +68,18 @@ exports.handler = async function (event) {
   try {
     const qsp = event?.queryStringParameters || {};
 
-    // Requested paging from the UI (offset is WITHIN filtered results when q is used)
-    const limit = Math.max(
-      1,
-      Math.min(200, parseInt(qsp.limit || "50", 10) || 50)
-    );
+    const limit = Math.max(1, Math.min(200, parseInt(qsp.limit || "50", 10) || 50));
     const offset = Math.max(0, parseInt(qsp.offset || "0", 10) || 0);
 
-    // Search text
-    const q = String(qsp.q || "").trim();
+    const qRaw = String(qsp.q || "").trim();
+    const q = qRaw;
 
-    // Safety cap: how many raw listings we’ll scan when q is used
     const MAX_SCAN = Math.max(
       200,
       Math.min(5000, parseInt(process.env.MAX_SCAN || "1500", 10) || 1500)
     );
 
-    // 1) No search term → fast proxy (always return 200 so UI never hard-fails)
+    // 1) No search → fast proxy
     if (!q) {
       const params = new URLSearchParams({
         access_token: BRIDGE_API_KEY,
@@ -102,64 +98,105 @@ exports.handler = async function (event) {
       };
     }
 
-    // 2) MLS-like query → try /Property and ALWAYS return 200 with bundle:[]
+    // 2) MLS-like query → try /Property, fallback to scanning /listings
     if (looksLikeMLS(q)) {
-      const mls = String(q).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
+      const mls = normalizeMLS(q);
       const safe = mls.replace(/'/g, "''");
 
-      const url = new URL(`${BRIDGE_BASE_URL}/Property`);
-      url.searchParams.set("access_token", BRIDGE_API_KEY);
-      url.searchParams.set("limit", "1");
-      url.searchParams.set(
-        "$filter",
-        `(ListingKey eq '${safe}' or ListingId eq '${safe}' or MLSNumber eq '${safe}')`
-      );
-
-      let data = null;
-
+      // ---- 2a) Fast path: /Property
+      let listing = null;
       try {
-        const r = await fetch(url.toString(), {
-          headers: { Accept: "application/json" },
-        });
-        data = await r.json().catch(() => null);
+        const url = new URL(`${BRIDGE_BASE_URL}/Property`);
+        url.searchParams.set("access_token", BRIDGE_API_KEY);
+        url.searchParams.set("limit", "1");
+        url.searchParams.set(
+          "$filter",
+          `(ListingKey eq '${safe}' or ListingId eq '${safe}' or MLSNumber eq '${safe}')`
+        );
+
+        const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+        const data = await r.json().catch(() => null);
+
+        const bundle = Array.isArray(data?.bundle)
+          ? data.bundle
+          : Array.isArray(data?.value)
+          ? data.value
+          : [];
+
+        listing = bundle[0] || null;
       } catch {
-        data = null;
+        listing = null;
       }
 
-      const bundle = Array.isArray(data?.bundle)
-        ? data.bundle
-        : Array.isArray(data?.value)
-        ? data.value
-        : [];
+      // ---- 2b) Fallback: scan /listings until exact match found
+      if (!listing) {
+        const CHUNK = 200;
+        let scanned = 0;
+        let rawOffset = 0;
 
-      const listing = bundle[0] ? [bundle[0]] : [];
+        while (scanned < MAX_SCAN) {
+          const params = new URLSearchParams({
+            access_token: BRIDGE_API_KEY,
+            limit: String(CHUNK),
+            offset: String(rawOffset),
+          });
 
+          const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
+          const r = await fetch(url, { headers: { Accept: "application/json" } });
+          const data = await r.json().catch(() => ({}));
+
+          const bundle = Array.isArray(data?.bundle) ? data.bundle : [];
+          if (!bundle.length) break;
+
+          scanned += bundle.length;
+
+          // exact match only
+          const found = bundle.find((l) => {
+            const a = normalizeMLS(l?.ListingKey);
+            const b = normalizeMLS(l?.ListingId);
+            const c = normalizeMLS(l?.MLSNumber);
+            return a === mls || b === mls || c === mls;
+          });
+
+          if (found) {
+            listing = found;
+            break;
+          }
+
+          rawOffset += CHUNK;
+        }
+      }
+
+      // Always return 200 so UI doesn't show HTTP error
       return {
         statusCode: 200,
         body: JSON.stringify({
-          bundle: listing,
-          total: typeof data?.total === "number" ? data.total : 0,
-          totalMatches: listing.length,
+          bundle: listing ? [listing] : [],
+          total: 0,
+          totalMatches: listing ? 1 : 0,
           isCapped: false,
           scanned: 0,
           q: mls,
           limit,
           offset,
         }),
-        headers: COMMON_HEADERS,
+        // MLS: avoid caching misses
+        headers: {
+          ...COMMON_HEADERS,
+          "Cache-Control": "no-store",
+        },
       };
     }
 
-    // 3) General search (city/community/address) → scan & filter server-side
+    // 3) General search → scan & filter server-side (token match)
     const CHUNK = 200;
 
     let scanned = 0;
     let rawOffset = 0;
     let totalFeed = null;
 
-    const matches = []; // only store matches up to offset+limit to reduce memory
+    const matches = [];
     let totalMatches = 0;
-
     const needUpTo = offset + limit;
 
     while (scanned < MAX_SCAN) {
@@ -176,23 +213,18 @@ exports.handler = async function (event) {
       const bundle = Array.isArray(data?.bundle) ? data.bundle : [];
       if (totalFeed == null && typeof data?.total === "number") totalFeed = data.total;
 
-      // no more data
       if (!bundle.length) break;
 
       scanned += bundle.length;
 
-      // filter + count
       for (const l of bundle) {
         if (!isInternetDisplayable(l)) continue;
         if (!matchesQuery(l, q)) continue;
 
         totalMatches += 1;
-
-        // only keep what we need for this page window
         if (matches.length < needUpTo) matches.push(l);
       }
 
-      // if we already have enough matches to fill requested page, stop early
       if (matches.length >= needUpTo) break;
 
       rawOffset += CHUNK;
@@ -219,7 +251,7 @@ exports.handler = async function (event) {
   } catch (error) {
     console.error("Bridge proxy error:", error);
     return {
-      statusCode: 200, // ✅ keep UI stable even on errors
+      statusCode: 200,
       body: JSON.stringify({
         bundle: [],
         total: 0,
@@ -232,7 +264,7 @@ exports.handler = async function (event) {
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=10",
+        "Cache-Control": "no-store",
       },
     };
   }
