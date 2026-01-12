@@ -38,7 +38,7 @@ exports.handler = async function (event) {
 
   try {
     const limit = 200;
-    const maxPagesToScan = 40; // 40*200 = 8000 (covers your ~6410 total)
+    const maxPagesToScan = 40; // covers ~8000 records max
 
     for (let i = 0; i < maxPagesToScan; i++) {
       const offset = i * limit;
@@ -47,8 +47,6 @@ exports.handler = async function (event) {
       url.searchParams.set("access_token", BRIDGE_API_KEY);
       url.searchParams.set("limit", String(limit));
       url.searchParams.set("offset", String(offset));
-      url.searchParams.set("sortBy", "ModificationTimestamp");
-      url.searchParams.set("sortOrder", "DESC");
 
       const r = await fetch(url.toString(), {
         headers: { Accept: "application/json" },
@@ -85,7 +83,7 @@ exports.handler = async function (event) {
         };
       }
 
-      if (bundle.length < limit) break; // end of feed
+      if (bundle.length < limit) break;
     }
 
     return {
