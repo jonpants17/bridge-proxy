@@ -16,30 +16,28 @@ function normalizeId(raw) {
   return String(raw || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+function addId(map, id, listing) {
+  const key = normalizeId(id);
+  if (key) map.set(key, listing);
+}
+
 exports.handler = async function (event) {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
 
+  // CDN + browser caching (speed win)
   const HEADERS_OK = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
-    // Fast load: browser + Netlify CDN cache
+    // Browser 30s, Netlify Edge 5 min, allow serving stale while refreshing
     "Cache-Control": "public, max-age=30, s-maxage=300, stale-while-revalidate=86400",
-  };
-
-  const HEADERS_ERR = {
-    "Access-Control-Allow-Origin": "*",
-    "Content-Type": "application/json",
-    "Cache-Control": "no-store",
   };
 
   try {
     const qsp = event?.queryStringParameters || {};
 
-    // Use ids passed from homepage: ?ids=E4467116,E123...
-    // OR fallback to env var FEATURED_IDS="E4467116,E123..."
+    // ids can come from query string OR env var FEATURED_IDS
     const rawIds =
-      String(qsp.ids || "").trim() ||
-      String(process.env.FEATURED_IDS || "").trim();
+      String(qsp.ids || "").trim() || String(process.env.FEATURED_IDS || "").trim();
 
     const limit = Math.max(1, Math.min(3, parseInt(qsp.limit || "3", 10) || 3));
 
@@ -57,7 +55,7 @@ exports.handler = async function (event) {
       };
     }
 
-    // Build OData filter
+    // Build OData filter for all ids
     const orGroups = ids.map((id) => {
       const safe = id.replace(/'/g, "''");
       return `(ListingKey eq '${safe}' or ListingId eq '${safe}' or MLSNumber eq '${safe}')`;
@@ -65,7 +63,7 @@ exports.handler = async function (event) {
 
     const url = new URL(`${BRIDGE_BASE_URL}/Property`);
     url.searchParams.set("access_token", BRIDGE_API_KEY);
-    url.searchParams.set("limit", String(Math.max(20, ids.length * 4)));
+    url.searchParams.set("limit", String(Math.max(50, ids.length * 10)));
     url.searchParams.set("$filter", `(${orGroups.join(" or ")})`);
 
     const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
@@ -77,21 +75,19 @@ exports.handler = async function (event) {
       ? data.value
       : [];
 
-    // ✅ Index each listing by ALL IDs so MLS/ListingId/ListingKey all match
+    // Map listings by ALL possible IDs so pinned ids always resolve
     const map = new Map();
     for (const l of bundle) {
       if (!isInternetDisplayable(l)) continue;
 
-      const k1 = normalizeId(l.ListingKey);
-      const k2 = normalizeId(l.ListingId);
-      const k3 = normalizeId(l.MLSNumber);
-
-      if (k1) map.set(k1, l);
-      if (k2) map.set(k2, l);
-      if (k3) map.set(k3, l);
+      addId(map, l.ListingKey, l);
+      addId(map, l.ListingId, l);
+      addId(map, l.MLSNumber, l);
+      addId(map, l.MlsId, l);
+      addId(map, l.Id, l);
     }
 
-    // Preserve FEATURED_IDS order
+    // Preserve caller order
     const ordered = ids
       .map((id) => map.get(id))
       .filter(Boolean)
@@ -110,7 +106,11 @@ exports.handler = async function (event) {
     console.error("getFeatured error:", error);
     return {
       statusCode: 200,
-      headers: HEADERS_ERR,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
       body: JSON.stringify({ success: false, listings: [], error: error.message }),
     };
   }
