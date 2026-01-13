@@ -2,6 +2,10 @@
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
+function normalizeId(raw) {
+  return String(raw || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function isInternetDisplayable(l) {
   const v = String(
     l.InternetDisplayYN ??
@@ -10,10 +14,6 @@ function isInternetDisplayable(l) {
       ""
   ).toUpperCase();
   return v !== "N" && v !== "0" && v !== "FALSE";
-}
-
-function normalizeId(raw) {
-  return String(raw || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 async function safeJson(res) {
@@ -26,14 +26,14 @@ async function safeJson(res) {
 }
 
 exports.handler = async function (event) {
-  const HEADERS_OK = {
+  const COMMON_HEADERS_OK = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
     "Cache-Control":
       "public, max-age=30, s-maxage=300, stale-while-revalidate=86400",
   };
 
-  const HEADERS_ERR = {
+  const COMMON_HEADERS_ERR = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -42,8 +42,8 @@ exports.handler = async function (event) {
   try {
     const qsp = event?.queryStringParameters || {};
 
-    // ids via query string: ?ids=E4467116,E123...
-    // OR env var FEATURED_IDS
+    // ?ids=E4467116,E123...
+    // OR env FEATURED_IDS
     const rawIds =
       String(qsp.ids || "").trim() ||
       String(process.env.FEATURED_IDS || "").trim();
@@ -59,34 +59,34 @@ exports.handler = async function (event) {
     if (!ids.length) {
       return {
         statusCode: 200,
-        headers: HEADERS_OK,
+        headers: COMMON_HEADERS_OK,
         body: JSON.stringify({ success: true, listings: [], totalMatches: 0 }),
       };
     }
 
-    // ✅ Call your existing getListing function (same logic as the listings page)
-    // Use Netlify-provided base URL so it works on deploy previews too.
+    // ✅ Call the existing getListing function (the one you pasted that WORKS)
+    // Use Netlify env URLs so this works on deploy previews too.
     const baseUrl =
       process.env.DEPLOY_PRIME_URL ||
       process.env.URL ||
       `https://${event.headers.host}`;
 
-    const getListingEndpoint = `${baseUrl}/.netlify/functions/getListing`;
+    const ENDPOINT_DETAIL = `${baseUrl}/.netlify/functions/getListing`;
 
     async function fetchOne(id) {
-      const res = await fetch(`${getListingEndpoint}?id=${encodeURIComponent(id)}`, {
+      const res = await fetch(`${ENDPOINT_DETAIL}?id=${encodeURIComponent(id)}`, {
         headers: { Accept: "application/json" },
       });
 
       const json = (await safeJson(res)) || {};
-      const l = json.listing || null;
+      const l = json?.listing || null;
 
       if (!l) return null;
       if (!isInternetDisplayable(l)) return null;
       return l;
     }
 
-    // Sequential until we hit limit (fast + stable)
+    // fetch sequentially to preserve order
     const listings = [];
     for (const id of ids) {
       if (listings.length >= limit) break;
@@ -96,7 +96,7 @@ exports.handler = async function (event) {
 
     return {
       statusCode: 200,
-      headers: HEADERS_OK,
+      headers: COMMON_HEADERS_OK,
       body: JSON.stringify({
         success: true,
         listings,
@@ -107,7 +107,7 @@ exports.handler = async function (event) {
     console.error("getFeatured error:", error);
     return {
       statusCode: 200,
-      headers: HEADERS_ERR,
+      headers: COMMON_HEADERS_ERR,
       body: JSON.stringify({
         success: false,
         listings: [],
