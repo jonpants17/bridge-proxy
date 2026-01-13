@@ -20,19 +20,20 @@ function looksLikeMLS(raw) {
 function normalizeText(v) {
   return String(v || "")
     .toLowerCase()
-    .replace(/\s+/g, "")   // remove spaces (postal codes)
+    .replace(/\s+/g, "") // remove spaces (postal codes)
     .replace(/[^a-z0-9]/g, "");
 }
+
 function matchesQuery(listing, q) {
   if (!q) return true;
 
   const raw = String(q).trim().toLowerCase();
   const tokens = raw
     .split(/\s+/)
-    .map(t => normalizeText(t))
+    .map((t) => normalizeText(t))
     .filter(Boolean);
 
-  // ALSO include the "no spaces" version (important for postal codes)
+  // also include the "no spaces" version (important for postal codes)
   const joined = normalizeText(raw);
   if (joined && !tokens.includes(joined)) tokens.push(joined);
 
@@ -43,7 +44,7 @@ function matchesQuery(listing, q) {
     listing.CountyOrParish,
     listing.Municipality,
     listing.SubdivisionName,
-    listing.StateOrProvince,
+    listing.StateOrProvince, // if you want to remove this later, safe to delete
     listing.PostalCode,
     listing.UnparsedAddress,
     listing.AddressLine1,
@@ -59,8 +60,13 @@ function matchesQuery(listing, q) {
     .map(normalizeText)
     .join(" ");
 
-  // every token must match somewhere
-  return tokens.every(t => haystack.includes(t));
+  return tokens.every((t) => haystack.includes(t));
+}
+
+async function fetchJson(url) {
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
 }
 
 exports.handler = async function (event) {
@@ -88,28 +94,70 @@ exports.handler = async function (event) {
       Math.min(5000, parseInt(process.env.MAX_SCAN || "1500", 10) || 1500)
     );
 
-    // 1) No search term → fast proxy (use Bridge paging)
+    // =========================================================
+    // 1) No search term → fast proxy (Bridge paging)
+    //    Try "newest first" but fall back if Bridge rejects sort.
+    // =========================================================
     if (!q) {
-     const params = new URLSearchParams({
-    access_token: BRIDGE_API_KEY,
-    limit: String(limit),
-    offset: String(offset),
-    });
-      params.set("$orderby", "ListDate desc");
+      const baseParams = {
+        access_token: BRIDGE_API_KEY,
+        limit: String(limit),
+        offset: String(offset),
+      };
 
-      const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
-      const r = await fetch(url, { headers: { Accept: "application/json" } });
-      const data = await r.json().catch(() => ({}));
+      const sortAttempts = [
+        // Attempt 1: OData-style (often rejected on some Bridge endpoints)
+        (p) => p.set("$orderby", "ListDate desc"),
 
-      // IMPORTANT: always 200 so the UI doesn't hard-fail
+        // Attempt 2: Bridge-style sorting (often supported)
+        (p) => {
+          p.set("sortBy", "ListDate");
+          p.set("sortOrder", "DESC");
+        },
+
+        // Attempt 3: safer "last modified" style
+        (p) => {
+          p.set("sortBy", "ModificationTimestamp");
+          p.set("sortOrder", "DESC");
+        },
+
+        // Attempt 4: no sort at all
+        (_p) => {},
+      ];
+
+      let last = null;
+
+      for (const applySort of sortAttempts) {
+        const params = new URLSearchParams(baseParams);
+        applySort(params);
+
+        const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
+        last = await fetchJson(url);
+
+        if (last.ok) {
+          return {
+            statusCode: 200,
+            body: JSON.stringify(last.data),
+            headers: COMMON_HEADERS,
+          };
+        }
+      }
+
+      // If all failed, keep UI stable
       return {
         statusCode: 200,
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          bundle: [],
+          total: 0,
+          error: `Upstream error ${last?.status || "unknown"} (sorting attempt failed)`,
+        }),
         headers: COMMON_HEADERS,
       };
     }
 
+    // =========================================================
     // 2) MLS-like query → /Property (ALWAYS 200 with bundle:[])
+    // =========================================================
     if (looksLikeMLS(q)) {
       const mls = String(q).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
       const safe = mls.replace(/'/g, "''");
@@ -144,8 +192,8 @@ exports.handler = async function (event) {
         statusCode: 200,
         body: JSON.stringify({
           bundle: listing,
-          total: typeof data?.total === "number" ? data.total : 0, // not used for paging in UI when q present
-          totalMatches: listing.length, // ✅ UI should use this for paging/counts
+          total: typeof data?.total === "number" ? data.total : 0,
+          totalMatches: listing.length,
           isCapped: false,
           scanned: 0,
           scanCap: MAX_SCAN,
@@ -157,7 +205,9 @@ exports.handler = async function (event) {
       };
     }
 
-    // 3) General search → scan & filter server-side; offset applies within matches
+    // =========================================================
+    // 3) General search → scan & filter server-side
+    // =========================================================
     const CHUNK = 200;
 
     let scanned = 0;
@@ -177,8 +227,7 @@ exports.handler = async function (event) {
       });
 
       const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
-      const r = await fetch(url, { headers: { Accept: "application/json" } });
-      const data = await r.json().catch(() => ({}));
+      const { data } = await fetchJson(url);
 
       const bundle = Array.isArray(data?.bundle) ? data.bundle : [];
       if (totalFeed == null && typeof data?.total === "number") totalFeed = data.total;
@@ -192,8 +241,6 @@ exports.handler = async function (event) {
         if (!matchesQuery(l, q)) continue;
 
         totalMatches += 1;
-
-        // only keep what we need for this page window
         if (matches.length < needUpTo) matches.push(l);
       }
 
@@ -210,7 +257,7 @@ exports.handler = async function (event) {
       body: JSON.stringify({
         bundle: pageSlice,
         total: typeof totalFeed === "number" ? totalFeed : 0,
-        totalMatches, // ✅ use this on the frontend for paging/counts when q present
+        totalMatches,
         isCapped,
         scanned,
         scanCap: MAX_SCAN,
