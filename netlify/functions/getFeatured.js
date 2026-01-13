@@ -22,8 +22,8 @@ exports.handler = async function (event) {
   const HEADERS_OK = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
-    // Fast + cached at Netlify edge/CDN
-    "Cache-Control": "public, max-age=30, s-maxage=300, stale-while-revalidate=86400",
+    "Cache-Control":
+      "public, max-age=30, s-maxage=300, stale-while-revalidate=86400",
   };
 
   const HEADERS_ERR = {
@@ -35,13 +35,14 @@ exports.handler = async function (event) {
   try {
     const qsp = event?.queryStringParameters || {};
 
-    // Pass ids via query string: ?ids=E4467116,E123...
-    // OR set FEATURED_IDS in Netlify env var.
     const rawIds =
       String(qsp.ids || "").trim() ||
       String(process.env.FEATURED_IDS || "").trim();
 
-    const limit = Math.max(1, Math.min(3, parseInt(qsp.limit || "3", 10) || 3));
+    const limit = Math.max(
+      1,
+      Math.min(3, parseInt(qsp.limit || "3", 10) || 3)
+    );
 
     const ids = rawIds
       .split(",")
@@ -57,10 +58,10 @@ exports.handler = async function (event) {
       };
     }
 
-    // Build OData filter: (ListingKey eq 'X' or ListingId eq 'X' or MLSNumber eq 'X') OR ...
+    // ✅ Include ListingKeyNumeric in the OR filter
     const orGroups = ids.map((id) => {
       const safe = id.replace(/'/g, "''");
-      return `(ListingKey eq '${safe}' or ListingId eq '${safe}' or MLSNumber eq '${safe}')`;
+      return `(ListingKey eq '${safe}' or ListingKeyNumeric eq '${safe}' or ListingId eq '${safe}' or MLSNumber eq '${safe}')`;
     });
 
     const url = new URL(`${BRIDGE_BASE_URL}/Property`);
@@ -68,7 +69,9 @@ exports.handler = async function (event) {
     url.searchParams.set("limit", String(Math.max(50, ids.length * 5)));
     url.searchParams.set("$filter", `(${orGroups.join(" or ")})`);
 
-    const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+    const r = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+    });
     const data = await r.json().catch(() => ({}));
 
     const bundle = Array.isArray(data?.bundle)
@@ -77,7 +80,7 @@ exports.handler = async function (event) {
       ? data.value
       : [];
 
-    // ✅ Key fix: index each listing under ALL ids it could be referenced by
+    // ✅ Index each listing under ALL keys it could be referenced by
     const map = new Map();
     const addKey = (k, l) => {
       const nk = normalizeId(k);
@@ -86,12 +89,13 @@ exports.handler = async function (event) {
 
     for (const l of bundle) {
       if (!isInternetDisplayable(l)) continue;
+
       addKey(l.ListingKey, l);
+      addKey(l.ListingKeyNumeric, l); // ✅ this is the key fix for E4467116-style IDs
       addKey(l.ListingId, l);
       addKey(l.MLSNumber, l);
     }
 
-    // Preserve the order of ids coming in
     const ordered = ids
       .map((id) => map.get(id))
       .filter(Boolean)
@@ -111,7 +115,12 @@ exports.handler = async function (event) {
     return {
       statusCode: 200,
       headers: HEADERS_ERR,
-      body: JSON.stringify({ success: false, listings: [], totalMatches: 0, error: error.message }),
+      body: JSON.stringify({
+        success: false,
+        listings: [],
+        totalMatches: 0,
+        error: error.message,
+      }),
     };
   }
 };
