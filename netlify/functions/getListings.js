@@ -17,6 +17,13 @@ function looksLikeMLS(raw) {
   return /^[A-Z]\d{6,10}$/.test(m);
 }
 
+function normalizeText(v) {
+  return String(v || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")   // remove spaces (postal codes)
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function matchesQuery(listing, q) {
   if (!q) return true;
 
@@ -24,30 +31,34 @@ function matchesQuery(listing, q) {
     .trim()
     .toLowerCase()
     .split(/\s+/)
+    .map(t => normalizeText(t))
     .filter(Boolean);
 
   if (!tokens.length) return true;
 
-  const hay = [
+  const haystack = [
     listing.City,
+    listing.CountyOrParish,
+    listing.Municipality,
     listing.SubdivisionName,
+    listing.StateOrProvince,
+    listing.PostalCode,
     listing.UnparsedAddress,
     listing.AddressLine1,
     listing.StreetNumber,
     listing.StreetName,
-    listing.PostalCode,
-    listing.StateOrProvince,
     listing.MLSNumber,
     listing.ListingId,
+    listing.ListingKey,
     listing.ListOfficeName,
     listing.ListAgentFullName,
   ]
     .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+    .map(normalizeText)
+    .join(" ");
 
-  // require every token to appear somewhere
-  return tokens.every((t) => hay.includes(t));
+  // every token must match somewhere
+  return tokens.every(t => haystack.includes(t));
 }
 
 exports.handler = async function (event) {
