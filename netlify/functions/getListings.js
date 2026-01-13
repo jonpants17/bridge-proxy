@@ -23,16 +23,18 @@ function normalizeText(v) {
     .replace(/\s+/g, "")   // remove spaces (postal codes)
     .replace(/[^a-z0-9]/g, "");
 }
-
 function matchesQuery(listing, q) {
   if (!q) return true;
 
-  const tokens = String(q)
-    .trim()
-    .toLowerCase()
+  const raw = String(q).trim().toLowerCase();
+  const tokens = raw
     .split(/\s+/)
     .map(t => normalizeText(t))
     .filter(Boolean);
+
+  // ALSO include the "no spaces" version (important for postal codes)
+  const joined = normalizeText(raw);
+  if (joined && !tokens.includes(joined)) tokens.push(joined);
 
   if (!tokens.length) return true;
 
