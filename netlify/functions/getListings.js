@@ -90,11 +90,12 @@ exports.handler = async function (event) {
 
     // 1) No search term → fast proxy (use Bridge paging)
     if (!q) {
-      const params = new URLSearchParams({
-        access_token: BRIDGE_API_KEY,
-        limit: String(limit),
-        offset: String(offset),
-      });
+     const params = new URLSearchParams({
+    access_token: BRIDGE_API_KEY,
+    limit: String(limit),
+    offset: String(offset),
+    });
+      params.set("$orderby", "ListDate desc");
 
       const url = `${BRIDGE_BASE_URL}/listings?${params.toString()}`;
       const r = await fetch(url, { headers: { Accept: "application/json" } });
