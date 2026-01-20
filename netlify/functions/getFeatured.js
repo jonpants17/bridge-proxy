@@ -1,4 +1,5 @@
 // netlify/functions/getFeatured.js
+
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
@@ -57,7 +58,7 @@ exports.handler = async function (event) {
 
     const ids = rawIds
       .split(",")
-      .map((x) => String(x || "").trim()) // keep original tokens for MLS detection
+      .map((x) => String(x || "").trim())
       .filter(Boolean)
       .slice(0, 20);
 
@@ -70,7 +71,6 @@ exports.handler = async function (event) {
     }
 
     // ✅ Call the existing getListing function
-    // Use Netlify env URLs so this works on deploy previews too.
     const baseUrl =
       process.env.DEPLOY_PRIME_URL ||
       process.env.URL ||
@@ -82,7 +82,8 @@ exports.handler = async function (event) {
       const token = String(raw || "").trim();
       if (!token) return null;
 
-      // IMPORTANT: send MLS as mls= to avoid slow fallback scans
+      // ✅ If it's MLS, call getListing?mls=...
+      // ✅ Otherwise call getListing?id=... (ListingKey / ListingId style)
       const qs = looksLikeMLS(token)
         ? `mls=${encodeURIComponent(token)}`
         : `id=${encodeURIComponent(normalizeId(token))}`;
@@ -99,15 +100,15 @@ exports.handler = async function (event) {
       return l;
     }
 
-    // ✅ FAST: fetch in parallel, preserve original order
-    // Only fetch as many as we might need (up to 20, but usually limit=3)
-    const candidates = ids.slice(0, 20);
+    // ✅ Optimization for your current setup:
+    // If you only have ONE featured MLS, don't fetch 20.
+    // Still safe for future multiple featured items.
+    const candidates = ids.slice(0, Math.min(20, limit));
 
     const results = await Promise.all(
       candidates.map((x) => fetchOne(x).catch(() => null))
     );
 
-    // keep order, drop nulls, enforce limit
     const listings = results.filter(Boolean).slice(0, limit);
 
     return {
