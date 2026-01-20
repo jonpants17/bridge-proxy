@@ -25,6 +25,11 @@ async function safeJson(res) {
   }
 }
 
+// MLS pattern like E4467116 (letter + 6-10 digits)
+function looksLikeMLS(raw) {
+  return /^[A-Z]\d{6,10}$/i.test(String(raw || "").trim());
+}
+
 exports.handler = async function (event) {
   const COMMON_HEADERS_OK = {
     "Access-Control-Allow-Origin": "*",
@@ -52,7 +57,7 @@ exports.handler = async function (event) {
 
     const ids = rawIds
       .split(",")
-      .map(normalizeId)
+      .map((x) => String(x || "").trim()) // keep original tokens for MLS detection
       .filter(Boolean)
       .slice(0, 20);
 
@@ -64,7 +69,7 @@ exports.handler = async function (event) {
       };
     }
 
-    // ✅ Call the existing getListing function (the one you pasted that WORKS)
+    // ✅ Call the existing getListing function
     // Use Netlify env URLs so this works on deploy previews too.
     const baseUrl =
       process.env.DEPLOY_PRIME_URL ||
@@ -73,8 +78,16 @@ exports.handler = async function (event) {
 
     const ENDPOINT_DETAIL = `${baseUrl}/.netlify/functions/getListing`;
 
-    async function fetchOne(id) {
-      const res = await fetch(`${ENDPOINT_DETAIL}?id=${encodeURIComponent(id)}`, {
+    async function fetchOne(raw) {
+      const token = String(raw || "").trim();
+      if (!token) return null;
+
+      // IMPORTANT: send MLS as mls= to avoid slow fallback scans
+      const qs = looksLikeMLS(token)
+        ? `mls=${encodeURIComponent(token)}`
+        : `id=${encodeURIComponent(normalizeId(token))}`;
+
+      const res = await fetch(`${ENDPOINT_DETAIL}?${qs}`, {
         headers: { Accept: "application/json" },
       });
 
@@ -86,13 +99,16 @@ exports.handler = async function (event) {
       return l;
     }
 
-    // fetch sequentially to preserve order
-    const listings = [];
-    for (const id of ids) {
-      if (listings.length >= limit) break;
-      const l = await fetchOne(id).catch(() => null);
-      if (l) listings.push(l);
-    }
+    // ✅ FAST: fetch in parallel, preserve original order
+    // Only fetch as many as we might need (up to 20, but usually limit=3)
+    const candidates = ids.slice(0, 20);
+
+    const results = await Promise.all(
+      candidates.map((x) => fetchOne(x).catch(() => null))
+    );
+
+    // keep order, drop nulls, enforce limit
+    const listings = results.filter(Boolean).slice(0, limit);
 
     return {
       statusCode: 200,
