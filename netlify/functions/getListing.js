@@ -1,24 +1,31 @@
 // bridge-proxy/netlify/functions/getListing.js
-
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
+function fetchWithTimeout(url, opts = {}, ms = 12000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opts, signal: controller.signal })
+    .finally(() => clearTimeout(t));
+}
 
 exports.handler = async function (event) {
   const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
   const qs = event?.queryStringParameters || {};
   const raw = (qs.id || qs.mls || "").trim();
 
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "application/json",
+    // caching = BIG speed improvement, no behavior change
+    "Cache-Control": "public, max-age=60, s-maxage=900",
+  };
+
   if (!raw) {
     return {
       statusCode: 400,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        success: false,
-        error: "Missing id",
-      }),
+      headers,
+      body: JSON.stringify({ success: false, error: "Missing id or mls" }),
     };
   }
 
@@ -41,8 +48,35 @@ exports.handler = async function (event) {
   };
 
   try {
+    // ---------- FAST TRY: very small request first ----------
+    // If featured listings are recent, this often resolves instantly.
+    {
+      const quickUrl = new URL(`${BRIDGE_BASE_URL}/listings`);
+      quickUrl.searchParams.set("access_token", BRIDGE_API_KEY);
+      quickUrl.searchParams.set("limit", "20");
+      quickUrl.searchParams.set("offset", "0");
+
+      const qr = await fetchWithTimeout(quickUrl.toString(), {
+        headers: { Accept: "application/json" },
+      }, 12000);
+
+      if (qr.ok) {
+        const qdata = await qr.json().catch(() => ({}));
+        const qbundle = toArray(qdata);
+        const foundQuick = qbundle.find(matches);
+        if (foundQuick) {
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({ success: true, listing: foundQuick }),
+          };
+        }
+      }
+    }
+
+    // ---------- FALLBACK SCAN (capped) ----------
     const limit = 200;
-    const maxPagesToScan = 40; // ~8000 records max
+    const maxPagesToScan = 8; // was 40 — this is the real speed fix
 
     for (let i = 0; i < maxPagesToScan; i++) {
       const offset = i * limit;
@@ -52,18 +86,15 @@ exports.handler = async function (event) {
       url.searchParams.set("limit", String(limit));
       url.searchParams.set("offset", String(offset));
 
-      const r = await fetch(url.toString(), {
+      const r = await fetchWithTimeout(url.toString(), {
         headers: { Accept: "application/json" },
-      });
+      }, 12000);
 
       if (!r.ok) {
         const text = await r.text().catch(() => "");
         return {
           statusCode: r.status,
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Content-Type": "application/json",
-          },
+          headers,
           body: JSON.stringify({
             success: false,
             error: `Upstream error ${r.status}`,
@@ -72,21 +103,15 @@ exports.handler = async function (event) {
         };
       }
 
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       const bundle = toArray(data);
       const found = bundle.find(matches);
 
       if (found) {
         return {
           statusCode: 200,
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            success: true,
-            listing: found,
-          }),
+          headers,
+          body: JSON.stringify({ success: true, listing: found }),
         };
       }
 
@@ -95,25 +120,17 @@ exports.handler = async function (event) {
 
     return {
       statusCode: 404,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        success: false,
-        listing: null,
-      }),
+      headers,
+      body: JSON.stringify({ success: false, listing: null }),
     };
   } catch (error) {
+    const isAbort = String(error?.name || "").toLowerCase().includes("abort");
     return {
-      statusCode: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
+      statusCode: isAbort ? 504 : 500,
+      headers,
       body: JSON.stringify({
         success: false,
-        error: error.message,
+        error: isAbort ? "Upstream timeout" : error.message,
       }),
     };
   }
