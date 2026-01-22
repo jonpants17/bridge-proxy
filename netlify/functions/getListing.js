@@ -7,18 +7,29 @@ exports.handler = async function (event) {
   const qs = event?.queryStringParameters || {};
   const raw = (qs.id || qs.mls || "").trim();
 
+  // ✅ Server-side "data freshness" timestamp (source of truth)
+  const fetchedAt = new Date().toISOString();
+
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
-    // ✅ SAFE SPEED WIN: caching only (does not affect correctness)
-    "Cache-Control": "public, max-age=60, s-maxage=900",
+    "Vary": "Origin",
+    // ✅ Cache: fast + still well within 24h RECA requirement
+    // - browsers: 60s
+    // - CDN (Netlify): 15 min
+    // - allow serving slightly stale while revalidating (speed win)
+    "Cache-Control": "public, max-age=60, s-maxage=900, stale-while-revalidate=300",
   };
 
   if (!raw) {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ success: false, error: "Missing id or mls" }),
+      body: JSON.stringify({
+        success: false,
+        error: "Missing id or mls",
+        fetchedAt,
+      }),
     };
   }
 
@@ -65,6 +76,7 @@ exports.handler = async function (event) {
             success: false,
             error: `Upstream error ${r.status}`,
             details: text.slice(0, 500),
+            fetchedAt,
           }),
         };
       }
@@ -77,7 +89,11 @@ exports.handler = async function (event) {
         return {
           statusCode: 200,
           headers,
-          body: JSON.stringify({ success: true, listing: found }),
+          body: JSON.stringify({
+            success: true,
+            listing: found,
+            fetchedAt, // ✅ FEED freshness for the front-end stamp
+          }),
         };
       }
 
@@ -87,13 +103,21 @@ exports.handler = async function (event) {
     return {
       statusCode: 404,
       headers,
-      body: JSON.stringify({ success: false, listing: null }),
+      body: JSON.stringify({
+        success: false,
+        listing: null,
+        fetchedAt,
+      }),
     };
   } catch (error) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ success: false, error: error.message }),
+      body: JSON.stringify({
+        success: false,
+        error: error.message,
+        fetchedAt,
+      }),
     };
   }
 };
