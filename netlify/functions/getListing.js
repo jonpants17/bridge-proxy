@@ -34,8 +34,6 @@ exports.handler = async function (event) {
   }
 
   const target = String(raw).trim();
-  const idParam = String(qs.id || "").trim();   // ListingKey (best)
-  const mlsParam = String(qs.mls || "").trim(); // ListingId/MLSNumber (varies)
 
   const toArray = (data) =>
     Array.isArray(data?.bundle)
@@ -53,51 +51,7 @@ exports.handler = async function (event) {
     return a === target || b === target || c === target;
   };
 
-  // ✅ Remove mixed-content warnings: force https for MediaURL
-  function normalizeMediaHttps(listing) {
-    if (!listing || !Array.isArray(listing.Media)) return listing;
-    listing.Media = listing.Media.map((m) => ({
-      ...m,
-      MediaURL: (m.MediaURL || "").replace(/^http:\/\//i, "https://"),
-    }));
-    return listing;
-  }
-
   try {
-    // ===========================================================
-    // 1) FAST PATH: if id is provided, fetch listing directly
-    // ===========================================================
-    // This does NOT change compliance—just avoids scanning thousands of records.
-    if (idParam) {
-      const direct = new URL(
-        `${BRIDGE_BASE_URL}/listings/${encodeURIComponent(idParam)}`
-      );
-      direct.searchParams.set("access_token", BRIDGE_API_KEY);
-
-      const r0 = await fetch(direct.toString(), {
-        headers: { Accept: "application/json" },
-      });
-
-      if (r0.ok) {
-        const listing = normalizeMediaHttps(await r0.json());
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            success: true,
-            listing,
-            fetchedAt,
-          }),
-        };
-      }
-
-      // If direct lookup fails, we fall back to the original scan logic below.
-      // (No breaking changes.)
-    }
-
-    // ===========================================================
-    // 2) ORIGINAL LOGIC (fallback): scan feed pages until found
-    // ===========================================================
     const limit = 200;
     const maxPagesToScan = 40; // keep identical so it won't "miss"
 
@@ -137,8 +91,8 @@ exports.handler = async function (event) {
           headers,
           body: JSON.stringify({
             success: true,
-            listing: normalizeMediaHttps(found),
-            fetchedAt,
+            listing: found,
+            fetchedAt, // ✅ FEED freshness for the front-end stamp
           }),
         };
       }
