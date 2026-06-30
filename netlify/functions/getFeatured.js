@@ -4,8 +4,6 @@ const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const ODATA_BASE = "https://api.bridgedataoutput.com/api/v2/OData/rae";
-
-const CAITLYN_AGENT_KEY = "0522a4120745c4d8ed95045061a1f165";
 const MAXWELL_OFFICE_KEY = "8f49787f3d74882c79e028e7e1c69139";
 
 function isDisplayable(l) {
@@ -36,7 +34,7 @@ exports.handler = async function () {
   try {
     const primaryUrl =
       `${ODATA_BASE}/Property` +
-      `?$filter=(ListAgentKey eq '${CAITLYN_AGENT_KEY}' and IDXParticipationYN eq true)` +
+      `?$filter=(ListAgentFullName eq 'Caitlyn Schafers' and IDXParticipationYN eq true)` +
       `&$orderby=BridgeModificationTimestamp desc` +
       `&$top=1`;
 
