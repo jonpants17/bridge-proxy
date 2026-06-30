@@ -2,110 +2,70 @@
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
-exports.handler = async function (event) {
-  const { BRIDGE_API_KEY, BRIDGE_BASE_URL } = process.env;
-  const qs = event?.queryStringParameters || {};
-  const raw = (qs.id || qs.mls || "").trim();
+const ODATA_BASE = "https://api.bridgedataoutput.com/api/v2/OData/rae";
 
-  // ✅ Server-side "data freshness" timestamp (source of truth)
+function escapeODataString(v) {
+  return String(v || "").replace(/'/g, "''");
+}
+
+exports.handler = async function (event) {
+  const { BRIDGE_API_KEY } = process.env;
+  const qs = event?.queryStringParameters || {};
+  const id = String(qs.id || "").trim();
+  const mls = String(qs.mls || "").trim();
+
   const fetchedAt = new Date().toISOString();
 
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
     "Vary": "Origin",
-    // ✅ Cache: fast + still well within 24h RECA requirement
-    // - browsers: 60s
-    // - CDN (Netlify): 15 min
-    // - allow serving slightly stale while revalidating (speed win)
     "Cache-Control": "public, max-age=60, s-maxage=900, stale-while-revalidate=300",
   };
 
-  if (!raw) {
+  if (!id && !mls) {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({
-        success: false,
-        error: "Missing id or mls",
-        fetchedAt,
-      }),
+      body: JSON.stringify({ success: false, error: "Missing id or mls", fetchedAt }),
     };
   }
 
-  const target = String(raw).trim();
-
-  const toArray = (data) =>
-    Array.isArray(data?.bundle)
-      ? data.bundle
-      : Array.isArray(data?.value)
-      ? data.value
-      : Array.isArray(data?.listings)
-      ? data.listings
-      : [];
-
-  const matches = (l) => {
-    const a = String(l?.ListingKey || "").trim();
-    const b = String(l?.ListingId || "").trim();
-    const c = String(l?.MLSNumber || "").trim();
-    return a === target || b === target || c === target;
-  };
-
   try {
-    const limit = 200;
-    const maxPagesToScan = 40; // keep identical so it won't "miss"
+    const filters = [];
 
-    for (let i = 0; i < maxPagesToScan; i++) {
-      const offset = i * limit;
-
-      const url = new URL(`${BRIDGE_BASE_URL}/listings`);
-      url.searchParams.set("access_token", BRIDGE_API_KEY);
-      url.searchParams.set("limit", String(limit));
-      url.searchParams.set("offset", String(offset));
-
-      const r = await fetch(url.toString(), {
-        headers: { Accept: "application/json" },
-      });
-
-      if (!r.ok) {
-        const text = await r.text().catch(() => "");
-        return {
-          statusCode: r.status,
-          headers,
-          body: JSON.stringify({
-            success: false,
-            error: `Upstream error ${r.status}`,
-            details: text.slice(0, 500),
-            fetchedAt,
-          }),
-        };
-      }
-
-      const data = await r.json();
-      const bundle = toArray(data);
-      const found = bundle.find(matches);
-
-      if (found) {
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            success: true,
-            listing: found,
-            fetchedAt, // ✅ FEED freshness for the front-end stamp
-          }),
-        };
-      }
-
-      if (bundle.length < limit) break;
+    if (id) {
+      const safeId = escapeODataString(id);
+      filters.push(`ListingKey eq '${safeId}'`);
+      filters.push(`ListingId eq '${safeId}'`);
     }
 
+    if (mls) {
+      const safeMls = escapeODataString(mls.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+      filters.push(`ListingId eq '${safeMls}'`);
+    }
+
+    const url =
+      `${ODATA_BASE}/Property` +
+      `?$filter=(${filters.join(" or ")})` +
+      `&$top=1`;
+
+    const r = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${BRIDGE_API_KEY}`,
+        Accept: "application/json",
+      },
+    });
+
+    const data = await r.json().catch(() => ({}));
+    const listing = Array.isArray(data?.value) ? data.value[0] : null;
+
     return {
-      statusCode: 404,
+      statusCode: listing ? 200 : 404,
       headers,
       body: JSON.stringify({
-        success: false,
-        listing: null,
+        success: !!listing,
+        listing,
         fetchedAt,
       }),
     };
@@ -113,11 +73,7 @@ exports.handler = async function (event) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({
-        success: false,
-        error: error.message,
-        fetchedAt,
-      }),
+      body: JSON.stringify({ success: false, error: error.message, fetchedAt }),
     };
   }
 };
