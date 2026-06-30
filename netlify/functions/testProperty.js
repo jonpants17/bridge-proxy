@@ -4,10 +4,10 @@ const fetch = (...args) =>
 exports.handler = async function () {
   const { BRIDGE_API_KEY } = process.env;
 
-  const url =
-    "https://api.bridgedataoutput.com/api/v2/OData/rae/Property" +
-    "?$filter=MLSNumber eq 'E4494960'" +
-    "&$top=1";
+const url =
+  "https://api.bridgedataoutput.com/api/v2/OData/rae/Property" +
+  "?$filter=ListingId eq 'E4494960'" +
+  "&$top=1";
 
   try {
     const res = await fetch(url, {
